@@ -75,13 +75,21 @@ jobs:
 
             TOTAL=$((OPEN + CLOSED))
             if [ $TOTAL -eq 0 ]; then TOTAL=1; fi
-            PERCENT=$((CLOSED * 100 / TOTAL))
+              PERCENT=$((CLOSED * 100 / TOTAL))
 
-            FILLED=$((PERCENT / 5))   # 20 slots wide
-            EMPTY=$((20 - FILLED))
+            # Use 10 total segments, 10% per segment
+            SEGMENTS=10
+            FILLED=$((PERCENT / 10))
+            EMPTY=$((SEGMENTS - FILLED))
+            
+            # Prevent showing any filled bar if under 10%
+            if [ $PERCENT -lt 10 ]; then
+              FILLED=0
+              EMPTY=$SEGMENTS
+            fi
+            
             PROGRESS=$(printf '▰%.0s' $(seq 1 $FILLED))
-            PROGRESS+=$(printf '▱%.0s' $(seq 1 $EMPTY))
-
+            PROGRESS+=$(printf '▱%.0s' $(seq 1 $EMPTY))  
             # Due date in description
             if [ "$DUE_DATE" != "null" ]; then
               DUE_TS=$(date -d "$DUE_DATE" +%s)
