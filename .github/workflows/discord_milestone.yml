@@ -1,0 +1,133 @@
+name: Update Milestone Message
+
+on:
+  schedule:
+    - cron: "0 12 * * *" # daily backup refresh
+  workflow_dispatch:
+  milestone:
+    types: [created, edited, closed, deleted, opened]
+  issues:
+    types: [opened, closed, milestoned, demilestoned]
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Update Discord message
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          MESSAGE_ID: ${{ secrets.DISCORD_MESSAGE_ID }}
+        run: |
+          # Helper: HSV → RGB (returns decimal for Discord)
+          hsv_to_rgb() {
+            local H=$1
+            local S=1 V=1
+            local C=$(awk -v s=$S -v v=$V 'BEGIN{print s*v}')
+            local Hp=$(awk -v h=$H 'BEGIN{print (h/60.0)}')
+            local X=$(awk -v c=$C -v hp=$Hp 'BEGIN{print c*(1 - ((hp % 2) - 1 < 0 ? -((hp % 2) - 1) : (hp % 2) - 1))}')
+            local m=$(awk -v v=$V -v c=$C 'BEGIN{print v-c}')
+          
+            local r=0 g=0 b=0
+            if   (( $(echo "$Hp < 1" | bc -l) )); then r=$C; g=$X; b=0
+            elif (( $(echo "$Hp < 2" | bc -l) )); then r=$X; g=$C; b=0
+            elif (( $(echo "$Hp < 3" | bc -l) )); then r=0; g=$C; b=$X
+            elif (( $(echo "$Hp < 4" | bc -l) )); then r=0; g=$X; b=$C
+            elif (( $(echo "$Hp < 5" | bc -l) )); then r=$X; g=0; b=$C
+            else r=$C; g=0; b=$X
+            fi
+          
+            r=$(awk -v v=$r -v m=$m 'BEGIN{printf "%d", (v+m)*255}')
+            g=$(awk -v v=$g -v m=$m 'BEGIN{printf "%d", (v+m)*255}')
+            b=$(awk -v v=$b -v m=$m 'BEGIN{printf "%d", (v+m)*255}')
+          
+            # Clamp each channel into 0–255 just in case
+            ((r<0)) && r=0; ((r>255)) && r=255
+            ((g<0)) && g=0; ((g>255)) && g=255
+            ((b<0)) && b=0; ((b>255)) && b=255
+          
+            printf "%d\n" $(( (r<<16) + (g<<8) + b ))
+          }
+
+
+          # Fetch all milestones
+          MILESTONES=$(gh api repos/${{ github.repository }}/milestones --jq '.[] | {title:.title, desc:.description, due:.due_on}')
+
+          EMBEDS="[]"
+          INDEX=0
+          COUNT=$(echo "$MILESTONES" | wc -l)
+
+          while read -r milestone; do
+            TITLE=$(echo "$milestone" | jq -r '.title')
+            DESCRIPTION=$(echo "$milestone" | jq -r '.desc')
+            DUE_DATE=$(echo "$milestone" | jq -r '.due')
+
+            # Count issues for this milestone
+            OPEN=$(gh api --paginate repos/${{ github.repository }}/issues?state=all \
+              --jq "[.[] | select(.state==\"open\" and .milestone.title==\"$TITLE\")] | length")
+
+            CLOSED=$(gh api --paginate repos/${{ github.repository }}/issues?state=all \
+              --jq "[.[] | select(.state==\"closed\" and .milestone.title==\"$TITLE\")] | length")
+
+            TOTAL=$((OPEN + CLOSED))
+            if [ $TOTAL -eq 0 ]; then TOTAL=1; fi
+            PERCENT=$((CLOSED * 100 / TOTAL))
+
+            FILLED=$((PERCENT / 5))   # 20 slots wide
+            EMPTY=$((20 - FILLED))
+            PROGRESS=$(printf '▰%.0s' $(seq 1 $FILLED))
+            PROGRESS+=$(printf '▱%.0s' $(seq 1 $EMPTY))
+
+            # Due date in description
+            if [ "$DUE_DATE" != "null" ]; then
+              DUE_TS=$(date -d "$DUE_DATE" +%s)
+              DESC_TEXT="$(echo -e "$DESCRIPTION\n\nThis milestone is currently set to be completed <t:${DUE_TS}:D>, this may change at anytime.")"
+            else
+              DESC_TEXT="$DESCRIPTION"
+            fi
+
+            # Rainbow color based on index
+            HUE=$(( (INDEX * 360) / COUNT ))
+            COLOR=$(hsv_to_rgb $HUE)
+
+            # Build embed
+            EMBED=$(jq -n \
+              --arg title "$TITLE" \
+              --arg desc "$DESC_TEXT" \
+              --arg closed "$CLOSED" \
+              --arg open "$OPEN" \
+              --arg total "$TOTAL" \
+              --arg percent "$PERCENT" \
+              --arg progress "$PROGRESS" \
+              --arg time "$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")" \
+              --argjson color "$COLOR" \
+              '{
+                title: $title,
+                description: $desc,
+                fields: [
+                  {name:"Closed Issues", value: ("**" + $closed + "**"), inline:true},
+                  {name:"Open Issues", value: ("**" + $open + "**"), inline:true},
+                  {name:"Total Progress", value: ("**" + $percent + "%** \n" + "**" + $closed + " / " + $total + "**\n\n" + $progress), inline:false}
+                ],
+                timestamp: $time,
+                footer: {text:"Updates daily"},
+                color: $color
+              }')
+
+            EMBEDS=$(echo "$EMBEDS" | jq ". + [$EMBED]")
+
+            INDEX=$((INDEX + 1))
+          done <<< "$MILESTONES"
+
+          # Send all embeds
+          JSON=$(jq -n --argjson embeds "$EMBEDS" '{embeds:$embeds}')
+          
+          curl -X PATCH \
+            -H "Authorization: Bot $DISCORD_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$JSON" \
+            "https://discord.com/api/v10/channels/$CHANNEL_ID/messages/$MESSAGE_ID"
