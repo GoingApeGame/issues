@@ -89,11 +89,15 @@ jobs:
             else
               DESC_TEXT="$DESCRIPTION"
             fi
-
+            
             # Rainbow color based on index
             HUE=$(( (INDEX * 360) / COUNT ))
             COLOR=$(hsv_to_rgb $HUE)
-
+            
+            # Get milestone number for direct link
+            NUMBER=$(gh api repos/${{ github.repository }}/milestones --jq ".[] | select(.title==\"$TITLE\") | .number")
+            MILESTONE_URL="https://github.com/${{ github.repository }}/milestone/$NUMBER"
+            
             # Build embed
             EMBED=$(jq -n \
               --arg title "$TITLE" \
@@ -104,9 +108,11 @@ jobs:
               --arg percent "$PERCENT" \
               --arg progress "$PROGRESS" \
               --arg time "$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")" \
+              --arg url "$MILESTONE_URL" \
               --argjson color "$COLOR" \
               '{
                 title: $title,
+                url: $url,
                 description: $desc,
                 fields: [
                   {name:"Closed Issues", value: ("**" + $closed + "**"), inline:true},
