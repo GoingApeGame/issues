@@ -75,7 +75,7 @@ jobs:
 
             TOTAL=$((OPEN + CLOSED))
             if [ $TOTAL -eq 0 ]; then TOTAL=1; fi
-              PERCENT=$((CLOSED * 100 / TOTAL))
+            PERCENT=$(awk -v closed="$CLOSED" -v total="$TOTAL" 'BEGIN { printf "%.0f", (closed / total) * 100 }')
 
             # Use 10 total segments, 10% per segment
             SEGMENTS=10
